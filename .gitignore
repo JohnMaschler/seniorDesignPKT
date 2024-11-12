@@ -1,0 +1,3 @@
+
+# ignore data directory bc it's too big
+data/
