@@ -1,4 +1,4 @@
 # add pandas to the requirements.txt file
-pandas
-socket
-dpkt
+# pandas
+# socket
+dpkt==1.9.8
