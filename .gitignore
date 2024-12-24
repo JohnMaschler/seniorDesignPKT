@@ -1,3 +1,5 @@
 
 # ignore data directory bc it's too big
 data/
+maccdc2012_00000.pcap
+maccdc2012_00001.pcap

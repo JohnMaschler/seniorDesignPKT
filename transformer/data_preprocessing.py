@@ -80,10 +80,22 @@ def process_pcap(pcap_file_path, description, prompt, tags, output_json="packets
             if i >= max_packets - 1:
                 break
 
-    # Save processed data as JSON
+    # ============================
+    # Append to existing JSON file
+    # ============================
+    if os.path.exists(output_json):
+        with open(output_json, 'r') as json_file:
+            existing_data = json.load(json_file)
+    else:
+        existing_data = []
+
+    # Extend the existing data with new packet_data
+    existing_data.extend(packet_data)
+
+    # Write the combined data back to JSON
     with open(output_json, 'w') as json_file:
-        json.dump(packet_data, json_file, indent=4)
-    print(f"Processed data saved to {output_json}")
+        json.dump(existing_data, json_file, indent=4)
+    print(f"Appended {len(packet_data)} packets from {pcap_file_path} to {output_json}")
 
     # Insert metadata into the database
     metadata_id = insert_traffic_metadata(
@@ -99,15 +111,29 @@ def process_pcap(pcap_file_path, description, prompt, tags, output_json="packets
 
     print(f"Metadata and flows inserted into the database for {description}")
 
-# Example usage
+
 if __name__ == "__main__":
     script_dir = os.path.dirname(__file__)
-    pcap_path = os.path.join(script_dir, '../data/maccdc2012_00000.pcap')
+    data_dir = os.path.join(script_dir, '..')  # Directory containing PCAP files
+    output_json = "packets.json"
 
-    process_pcap(
-        pcap_file_path=pcap_path,
-        description="Example of Normal Network Traffic",
-        prompt="Generate Normal HTTP Network Traffic",
-        tags="Normal,HTTPS",
-        output_json="packets.json"
-    )
+    # Ensure the output JSON exists or create it with an empty list
+    if not os.path.exists(output_json):
+        with open(output_json, 'w') as json_file:
+            json.dump([], json_file)
+
+    # List of PCAP files to process
+    pcap_files = [
+        {"path": os.path.join(data_dir, "maccdc2012_00001.pcap"), "description": "Example 2", "tags": "Normal,DNS"},
+        {"path": os.path.join(data_dir, "maccdc2012_00000.pcap"), "description": "Example 1", "tags": "Normal,DNS"},
+    ]
+
+    for pcap_info in pcap_files:
+        process_pcap(
+            pcap_file_path=pcap_info["path"],
+            description=pcap_info["description"],
+            prompt=f"Generate traffic for {pcap_info['description']}",
+            tags=pcap_info["tags"],
+            output_json=output_json  # Use the same JSON file to append data
+        )
+
