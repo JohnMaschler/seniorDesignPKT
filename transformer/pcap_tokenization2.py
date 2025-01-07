@@ -14,15 +14,14 @@ PACKET_START = "<PACKET_START>"
 PACKET_END   = "<PACKET_END>"
 PAYLOAD_START= "<PAYLOAD_START>"
 PAYLOAD_END  = "<PAYLOAD_END>"
+STREAM_START = "<STREAM_START>"
+STREAM_END = "<STREAM_END>"
 SOS = "<SOS>"  # Start Of Sequence (decoder input)
 EOS = "<EOS>"  # End Of Sequence (decoder target)
-PAD = "<PAD>"  # Padding token
-PACKET_HEADER_START = "<PACKET_HEADER_START>"
-PACKET_HEADER_END = "<PACKET_HEADER_END>"
+PAD = "<PAD>"
 
 SPECIAL_TOKENS = [
-    PACKET_START, PACKET_END,
-    PACKET_HEADER_START, PACKET_HEADER_END,
+    PACKET_START, PACKET_END, STREAM_END, STREAM_START,
     PAYLOAD_START, PAYLOAD_END,
     SOS, EOS, PAD
 ]
@@ -30,8 +29,14 @@ SPECIAL_TOKENS = [
 
 def decode_tokens_to_packets(tokens):
     packets = []
+    # TODO: the STREAM_START token is always missing from the generated tokens
+    # if STREAM_START not in tokens or STREAM_END not in tokens:
+    #     print("ERROR: Incomplete stream detected. Returning empty packets.")
+    #     return packets
+
+    # Remove the stream start and end tokens for now
+    tokens = tokens[1:-1]
     current_packet = {}
-    inside_header = False
     inside_payload = False
     payload = []
 
@@ -43,49 +48,45 @@ def decode_tokens_to_packets(tokens):
             if payload:
                 current_packet["payload_hex"] = payload
             packets.append(current_packet)
-        elif token == PACKET_HEADER_START:
-            inside_header = True
-        elif token == PACKET_HEADER_END:
-            inside_header = False
         elif token == PAYLOAD_START:
             inside_payload = True
         elif token == PAYLOAD_END:
             inside_payload = False
-        elif inside_header and ":" in token:
+        elif ":" in token and not inside_payload:
             key, value = token.split(":", 1)
             current_packet[key] = value
         elif inside_payload:
             payload.append(token)
-
     return packets
 
-
-
-###############################################################################
-# Minimal Dataset that Groups Packets and Associates a Prompt
-###############################################################################
 
 class MultiPacketStreamDataset(Dataset):
     """
     Each dataset entry is a tuple: (user_prompt, packet_stream_tokens).
+    Grouping packets and tokenizing them into a list of tokens.
+    use data_preprocessing2.py to generate the json file. (streams.json)
     """
     def __init__(self, json_file, max_packets_per_stream=None):
         self.samples = []
 
-        # Load streams from JSON
         with open(json_file, 'r') as f:
             streams = json.load(f)
 
         for stream in streams:
-            prompt = stream["prompt"]
+            stream_id = stream.get("stream_id", {})
+            stream_id_info = " ".join(f"{key}: {value}" for key, value in stream_id.items())
+            # print(f"Stream ID Info: {stream_id_info}")
+            prompt = f"{stream['prompt']} [Stream Info: {stream_id_info}]"
+
             packets = stream["packets"]
 
-            # Optionally limit packets per stream
+            # Limit the number of packets per stream ?
             if max_packets_per_stream:
                 packets = packets[:max_packets_per_stream]
 
-            # Tokenize stream
+            # Tokenize the stream packets
             stream_tokens = multi_packets_to_tokens(packets)
+            
             self.samples.append((prompt, stream_tokens))
 
     def __len__(self):
@@ -94,54 +95,55 @@ class MultiPacketStreamDataset(Dataset):
     def __getitem__(self, idx):
         return self.samples[idx]
 
-def create_input_description(packet_group):
-    """
-    Generate a specific description for a group of packets.
-    """
-    descriptions = []
-    for pkt in packet_group:
-        descriptions.append(
-            f"Send a {pkt['protocol']} packet from {pkt['src_ip']} (port {pkt['src_port']}) "
-            f"to {pkt['dst_ip']} (port {pkt['dst_port']}), with flags {pkt['flags']} "
-            f"and payload size {pkt['payload_size']} bytes."
-        )
-    return " ".join(descriptions)
-
-###############################################################################
-# Tokenizers for Text and Packet Sequences
-###############################################################################
+"""
+build_vocab: Build the vocabulary from a list of texts that are given by the user.
+tokenize: Split a text into tokens.
+encode: Convert a text into a list of token IDs.
+decode: Convert a list of token IDs into a text.
+"""
 class TextTokenizer:
-    """
-    Tokenizes user instructions (e.g., "Generate 3 TCP packets...") 
-    into basic word pieces or subwords.
-    """
     def __init__(self):
-        self.word2id = {PAD: 0, SOS: 1, EOS: 2}
-        self.id2word = {0: PAD, 1: SOS, 2: EOS}
-        self.vocab_size = 3
+        self.token_to_id = {"<PAD>": 0, "<UNK>": 1, "<SOS>": 2, "<EOS>": 3}
+        self.id_to_token = {0: "<PAD>", 1: "<UNK>", 2: "<SOS>", 3: "<EOS>"}
+        self.vocab_size = 4
+        self.word2id = self.token_to_id
 
     def build_vocab(self, text_list):
+        # Split each text into tokens
         for text in text_list:
-            tokens = self.tokenize(text)
-            for tok in tokens:
-                if tok not in self.word2id:
-                    self.word2id[tok] = self.vocab_size
-                    self.id2word[self.vocab_size] = tok
+            for token in self.tokenize(text):
+                if token not in self.token_to_id:
+                    self.token_to_id[token] = self.vocab_size
+                    self.id_to_token[self.vocab_size] = token
                     self.vocab_size += 1
 
     def tokenize(self, text):
-        # Very naive: split on non-alphanumeric
-        return re.findall(r"[A-Za-z0-9.]+", text.lower())
+        # for now, just splitting by space as our tokenization
+        tokens = re.findall(r"[A-Za-z0-9.]+", text.lower())
+        return tokens
 
     def encode(self, text):
-        # Convert text to tokens, map to IDs, add <SOS> and <EOS>
-        tokens = [self.word2id.get(tok, 0) for tok in self.tokenize(text)]
-        return [self.word2id[SOS]] + tokens + [self.word2id[EOS]]
+        # Add <SOS> at the start and <EOS> at the end
+        tokens = []
+        tokens.append(self.token_to_id["<SOS>"])
+        for t in self.tokenize(text):
+            if t in self.token_to_id:
+                tokens.append(self.token_to_id[t])
+            else:
+                tokens.append(self.token_to_id["<UNK>"])
+        tokens.append(self.token_to_id["<EOS>"])
+        return tokens
 
-    def decode(self, ids):
-        return [self.id2word.get(i, "<UNK>") for i in ids]
+    def decode(self, tokens):
+        return [self.id_to_token.get(t, "<UNK>") for t in tokens]
 
 
+""" 
+PacketTokenizer class for tokenizing packets into a list of tokens.
+encode: Convert a list of tokens to a list of token IDs.
+build_vocab: Build the vocabulary from a list of token lists.
+decode: Convert a list of token IDs to a list of tokens.
+"""
 class PacketTokenizer:
     def __init__(self):
         self.token2id = {tok: idx for idx, tok in enumerate(SPECIAL_TOKENS)}
@@ -154,11 +156,11 @@ class PacketTokenizer:
             if tok in self.token2id:
                 encoded.append(self.token2id[tok])
             else:
-                # Map unknown tokens to a special <UNK> token or raise an error
+                # Map unknown tokens to <UNK> token
                 if "<UNK>" in self.token2id:
                     encoded.append(self.token2id["<UNK>"])
                 else:
-                    print(f"[WARNING] Unknown token: {tok}")
+                    print(f"[WARNING] Unknown token (OOV): {tok}")
         return encoded
 
     def build_vocab(self, list_of_token_lists):
@@ -177,12 +179,8 @@ class PacketTokenizer:
 
 
 # def packet_to_tokens(packet_dict):
-#     """
-#     Convert a single packet (dict) to a list of tokens with special delimiters.
-#     """
 #     tokens = []
 #     tokens.append(PACKET_START)
-#     tokens.append(PACKET_HEADER_START)
 #     tokens.append(f"protocol:{packet_dict['protocol']}")
 #     tokens.append(f"src_ip:{packet_dict['src_ip']}")
 #     tokens.append(f"dst_ip:{packet_dict['dst_ip']}")
@@ -190,9 +188,7 @@ class PacketTokenizer:
 #     tokens.append(f"dst_port:{packet_dict['dst_port']}")
 #     tokens.append(f"flags:{packet_dict['flags']}")
 #     tokens.append(f"payload_size:{packet_dict['payload_size']}")
-#     tokens.append(PACKET_HEADER_END)
 
-#     # Optionally include payload tokens
 #     # tokens.append(PAYLOAD_START)
 #     # tokens.extend(packet_dict.get("payload_hex", []))
 #     # tokens.append(PAYLOAD_END)
@@ -200,20 +196,25 @@ class PacketTokenizer:
 #     tokens.append(PACKET_END)
 #     return tokens
 
+
 def packet_to_tokens(packet_dict):
     """
-    Convert a single packet (dict) to a list of tokens with a consistent order.
+    Convert a single packet (dict) to a list of tokens.
     """
     tokens = []
     tokens.append(PACKET_START)
-    tokens.append(PACKET_HEADER_START)
-    
-    # Use a consistent order for fields
-    for field in ['protocol', 'src_ip', 'dst_ip', 'src_port', 'dst_port', 'flags', 'payload_size']:
+
+    fields_order = [
+        "src_ip", "dst_ip", "protocol", "src_port", 
+        "dst_port", "timestamp", "flags", "payload_size"
+    ]
+
+    for field in fields_order:
         if field in packet_dict:
-            tokens.append(f"{field}:{packet_dict[field]}")
-    
-    tokens.append(PACKET_HEADER_END)
+            token = f"{field}:{packet_dict[field]}"
+            tokens.append(token)
+            # print(f"Tokenized Field: {token}")
+
     tokens.append(PACKET_END)
     return tokens
 
@@ -221,9 +222,12 @@ def packet_to_tokens(packet_dict):
 
 def multi_packets_to_tokens(packet_list):
     """
-    Concatenate tokens for multiple packets into one flat sequence.
+    Tokenize a list of packets the stream with STREAM_BEGIN and STREAM_END.
     """
-    all_tokens = []
+    all_tokens = [STREAM_START]
     for pkt in packet_list:
         all_tokens.extend(packet_to_tokens(pkt))
+    all_tokens.append(STREAM_END)
+
+    # print("Tokenized Stream:", all_tokens)
     return all_tokens
