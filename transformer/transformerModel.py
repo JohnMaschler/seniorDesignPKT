@@ -1,12 +1,3 @@
-"""
-A from scratch implementation of Transformer network,
-following the paper Attention is all you need with a
-few minor differences. I tried to make it as clear as
-possible to understand and also went through the code
-on my youtube channel!
-
-
-"""
 
 import torch
 import torch.nn as nn
@@ -151,20 +142,61 @@ class Encoder(nn.Module):
 
 
 class DecoderBlock(nn.Module):
+    """
+    A standard Transformer decoder block with:
+      1) Masked self-attention
+      2) Cross-attention (encoder-decoder)
+      3) Feed-forward network
+    Each sub-layer has its own residual connection + LayerNorm.
+    """
     def __init__(self, embed_size, heads, forward_expansion, dropout, device):
         super(DecoderBlock, self).__init__()
-        self.norm = nn.LayerNorm(embed_size)
-        self.attention = SelfAttention(embed_size, heads=heads)
-        self.transformer_block = TransformerBlock(
-            embed_size, heads, dropout, forward_expansion
-        )
-        self.dropout = nn.Dropout(dropout)
+        self.embed_size = embed_size
+        self.device = device
 
-    def forward(self, x, value, key, src_mask, trg_mask):
-        attention = self.attention(x, x, x, trg_mask)
-        query = self.dropout(self.norm(attention + x))
-        out = self.transformer_block(value, key, query, src_mask)
-        return out
+        # 1) Masked self-attention sub-layer
+        self.self_attn = SelfAttention(embed_size, heads=heads)
+        self.norm1 = nn.LayerNorm(embed_size)
+        self.dropout1 = nn.Dropout(dropout)
+
+        # 2) Cross-attention sub-layer (encoder-decoder)
+        self.cross_attn = SelfAttention(embed_size, heads=heads)
+        self.norm2 = nn.LayerNorm(embed_size)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # 3) Feed-forward sub-layer
+        self.feed_forward = nn.Sequential(
+            nn.Linear(embed_size, forward_expansion * embed_size),
+            nn.ReLU(),
+            nn.Linear(forward_expansion * embed_size, embed_size),
+        )
+        self.norm3 = nn.LayerNorm(embed_size)
+        self.dropout3 = nn.Dropout(dropout)
+
+    def forward(self, x, enc_out, src_mask, trg_mask):
+        """
+        x: previous decoder layer output (or word embeddings at first layer)
+        enc_out: encoder output
+        src_mask: mask for src sequence (pads, etc.)
+        trg_mask: causal mask for target tokens (no peeking at future positions)
+        """
+        # ----- 1) Masked Self-Attention over the decoder’s own outputs -----
+        # Q, K, V all come from x
+        _x = self.self_attn(x, x, x, trg_mask)
+        x = x + self.dropout1(_x)   # Residual
+        x = self.norm1(x)
+
+        # ----- 2) Cross-Attention: Q = decoder output so far, K,V = enc_out -----
+        _x = self.cross_attn(values=enc_out, keys=enc_out, query=x, mask=src_mask)
+        x = x + self.dropout2(_x)   # Residual
+        x = self.norm2(x)
+
+        # ----- 3) Feed-Forward -----
+        _x = self.feed_forward(x)
+        x = x + self.dropout3(_x)   # Residual
+        x = self.norm3(x)
+
+        return x
 
 
 class Decoder(nn.Module):
@@ -181,12 +213,18 @@ class Decoder(nn.Module):
     ):
         super(Decoder, self).__init__()
         self.device = device
+
         self.word_embedding = nn.Embedding(trg_vocab_size, embed_size)
         self.position_embedding = nn.Embedding(max_length, embed_size)
-
         self.layers = nn.ModuleList(
             [
-                DecoderBlock(embed_size, heads, forward_expansion, dropout, device)
+                DecoderBlock(
+                    embed_size,
+                    heads,
+                    forward_expansion,
+                    dropout,
+                    device,
+                )
                 for _ in range(num_layers)
             ]
         )
@@ -194,15 +232,21 @@ class Decoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, enc_out, src_mask, trg_mask):
+        """
+        x: target tokens (shape: (N, tgt_len))
+        enc_out: encoder outputs (shape: (N, src_len, embed_size))
+        src_mask: source padding mask
+        trg_mask: target causal mask
+        """
         N, seq_length = x.shape
         positions = torch.arange(0, seq_length).expand(N, seq_length).to(self.device)
-        x = self.dropout((self.word_embedding(x) + self.position_embedding(positions)))
+        x = self.dropout(self.word_embedding(x) + self.position_embedding(positions))
 
+        # Pass through each DecoderBlock
         for layer in self.layers:
-            x = layer(x, enc_out, enc_out, src_mask, trg_mask)
+            x = layer(x, enc_out, src_mask, trg_mask)
 
         out = self.fc_out(x)
-
         return out
 
 
@@ -271,21 +315,21 @@ class Transformer(nn.Module):
         return out
 
 
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
+# if __name__ == "__main__":
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # print(device)
 
-    x = torch.tensor([[1, 5, 6, 4, 3, 9, 5, 2, 0], [1, 8, 7, 3, 4, 5, 6, 7, 2]]).to(
-        device
-    )
-    trg = torch.tensor([[1, 7, 4, 3, 5, 9, 2, 0], [1, 5, 6, 2, 4, 7, 6, 2]]).to(device)
+    # x = torch.tensor([[1, 5, 6, 4, 3, 9, 5, 2, 0], [1, 8, 7, 3, 4, 5, 6, 7, 2]]).to(
+    #     device
+    # )
+    # trg = torch.tensor([[1, 7, 4, 3, 5, 9, 2, 0], [1, 5, 6, 2, 4, 7, 6, 2]]).to(device)
 
-    src_pad_idx = 0
-    trg_pad_idx = 0
-    src_vocab_size = 10
-    trg_vocab_size = 10
-    model = Transformer(src_vocab_size, trg_vocab_size, src_pad_idx, trg_pad_idx, device=device).to(
-        device
-    )
-    out = model(x, trg[:, :-1])
-    print(out.shape)
+    # src_pad_idx = 0
+    # trg_pad_idx = 0
+    # src_vocab_size = 10
+    # trg_vocab_size = 10
+    # model = Transformer(src_vocab_size, trg_vocab_size, src_pad_idx, trg_pad_idx, device=device).to(
+    #     device
+    # )
+    # out = model(x, trg[:, :-1])
+    # print(out.shape)
