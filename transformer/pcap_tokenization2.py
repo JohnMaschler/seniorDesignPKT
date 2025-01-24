@@ -2,6 +2,7 @@ import dpkt
 import socket
 import re
 import random
+import random
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
@@ -20,6 +21,7 @@ SOS = "<SOS>"  # Start Of Sequence (decoder input)
 EOS = "<EOS>"  # End Of Sequence (decoder target)
 PAD = "<PAD>"
 
+
 SPECIAL_TOKENS = [
     PACKET_START, PACKET_END, STREAM_END, STREAM_START,
     PAYLOAD_START, PAYLOAD_END,
@@ -29,9 +31,9 @@ SPECIAL_TOKENS = [
 
 def decode_tokens_to_packets(tokens):
     packets = []
-    # TODO: the STREAM_START token is always missing from the generated tokens
+    # ! the STREAM_START token is always missing from the generated tokens
     # if STREAM_START not in tokens or STREAM_END not in tokens:
-    #     print("ERROR: Incomplete stream detected. Returning empty packets.")
+    #     print("Incomplete stream detected. Returning empty packets.")
     #     return packets
 
     # Remove the stream start and end tokens for now
@@ -60,13 +62,26 @@ def decode_tokens_to_packets(tokens):
     return packets
 
 
+def generate_variations(prompt, stream_id_info):
+    """
+    Generate multiple variations of prompts for a given stream.
+    """
+    variations = [
+        f"{prompt} [traffic Details: {stream_id_info}]",
+        f"{prompt} with network traffic parameters: {stream_id_info}",
+        f"Simulate the following stream: {stream_id_info}. {prompt}",
+        f"{prompt}. Details of the packet stream: {stream_id_info}",
+        f"Based on the configuration ({stream_id_info}), {prompt}"
+    ]
+    return variations
+
 class MultiPacketStreamDataset(Dataset):
     """
     Each dataset entry is a tuple: (user_prompt, packet_stream_tokens).
     Grouping packets and tokenizing them into a list of tokens.
     use data_preprocessing2.py to generate the json file. (streams.json)
     """
-    def __init__(self, json_file, max_packets_per_stream=None):
+    def __init__(self, json_file, max_packets_per_stream=None, num_prompts_per_stream=4):
         self.samples = []
 
         with open(json_file, 'r') as f:
@@ -76,7 +91,11 @@ class MultiPacketStreamDataset(Dataset):
             stream_id = stream.get("stream_id", {})
             stream_id_info = " ".join(f"{key}: {value}" for key, value in stream_id.items())
             # print(f"Stream ID Info: {stream_id_info}")
-            prompt = f"{stream['prompt']} [Stream Info: {stream_id_info}]"
+            # prompt = f"{stream['prompt']} [Stream Info: {stream_id_info}]"
+            base_prompt = stream["prompt"]
+            
+            prompts = generate_variations(base_prompt, stream_id_info)
+            selected_prompts = random.sample(prompts, min(num_prompts_per_stream, len(prompts)))
 
             packets = stream["packets"]
 
@@ -87,7 +106,8 @@ class MultiPacketStreamDataset(Dataset):
             # Tokenize the stream packets
             stream_tokens = multi_packets_to_tokens(packets)
             
-            self.samples.append((prompt, stream_tokens))
+            for prompt in selected_prompts:
+                self.samples.append((prompt, stream_tokens))
 
     def __len__(self):
         return len(self.samples)
@@ -117,6 +137,7 @@ class TextTokenizer:
                     self.id_to_token[self.vocab_size] = token
                     self.vocab_size += 1
 
+    # TODO: Implement a better tokenization method
     def tokenize(self, text):
         # for now, just splitting by space as our tokenization
         tokens = re.findall(r"[A-Za-z0-9.]+", text.lower())
@@ -160,7 +181,7 @@ class PacketTokenizer:
                 if "<UNK>" in self.token2id:
                     encoded.append(self.token2id["<UNK>"])
                 else:
-                    print(f"[WARNING] Unknown token (OOV): {tok}")
+                    print(f"Unknown token (OOV): {tok}")
         return encoded
 
     def build_vocab(self, list_of_token_lists):
@@ -176,25 +197,7 @@ class PacketTokenizer:
 
     def decode(self, ids):
         return [self.id2token.get(i, "<UNK>") for i in ids]
-
-
-# def packet_to_tokens(packet_dict):
-#     tokens = []
-#     tokens.append(PACKET_START)
-#     tokens.append(f"protocol:{packet_dict['protocol']}")
-#     tokens.append(f"src_ip:{packet_dict['src_ip']}")
-#     tokens.append(f"dst_ip:{packet_dict['dst_ip']}")
-#     tokens.append(f"src_port:{packet_dict['src_port']}")
-#     tokens.append(f"dst_port:{packet_dict['dst_port']}")
-#     tokens.append(f"flags:{packet_dict['flags']}")
-#     tokens.append(f"payload_size:{packet_dict['payload_size']}")
-
-#     # tokens.append(PAYLOAD_START)
-#     # tokens.extend(packet_dict.get("payload_hex", []))
-#     # tokens.append(PAYLOAD_END)
-
-#     tokens.append(PACKET_END)
-#     return tokens
+    
 
 
 def packet_to_tokens(packet_dict):
