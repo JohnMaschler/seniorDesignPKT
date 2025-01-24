@@ -4,7 +4,6 @@ import json
 import os
 import sys
 from datetime import datetime
-from data_scripts.db import insert_traffic_metadata, insert_traffic_flows
 from collections import defaultdict
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -12,10 +11,19 @@ parent_dir = os.path.dirname(script_dir)
 sys.path.append(parent_dir)
 
 
-def process_pcap(pcap_file_path, description, prompt, tags, output_json="streams.json", max_packets=1000):
+def canonical_flow_key(src_ip, dst_ip, src_port, dst_port, protocol):
+    """Returns a tuple that is the same for both directions of a flow.
+    This allows the same key to be used regardless of the direction of the flow (in theory)."""
+    # the src_ip, src_port tuple will always be less than the dst_ip, dst_port tuple
+    if (src_ip, src_port) < (dst_ip, dst_port):
+        return (src_ip, dst_ip, src_port, dst_port, protocol)
+    else:
+        return (dst_ip, src_ip, dst_port, src_port, protocol)
+
+# might have to limit the number of packets
+def process_pcap(pcap_file_path, description, prompt, tags, output_json="streams.json", max_packets=100000):
     packet_streams = defaultdict(list)
 
-    # Read the pcap file
     with open(pcap_file_path, 'rb') as f:
         pcap_reader = dpkt.pcap.Reader(f)
 
@@ -35,7 +43,7 @@ def process_pcap(pcap_file_path, description, prompt, tags, output_json="streams
                     payload_hex = [f"{byte:02x}" for byte in transport_layer.data]
                     timestamp = datetime.fromtimestamp(ts).isoformat()
 
-                    # Handle TCP flags
+                    # TCP flags
                     flags = ""
                     if protocol == 'TCP':
                         tcp_flags = {
@@ -48,8 +56,8 @@ def process_pcap(pcap_file_path, description, prompt, tags, output_json="streams
                         }
                         flags = ",".join(name for bit, name in tcp_flags.items() if transport_layer.flags & bit)
 
-                    # Create a unique identifier for the stream
-                    stream_id = (src_ip, dst_ip, src_port, dst_port, protocol)
+                    # Create a unique identifier for each stream
+                    stream_id = canonical_flow_key(src_ip, dst_ip, src_port, dst_port, protocol)
                     packet = {
                         "src_ip": src_ip,
                         "dst_ip": dst_ip,
@@ -69,19 +77,21 @@ def process_pcap(pcap_file_path, description, prompt, tags, output_json="streams
     # Convert the grouped streams to a list
     output_streams = []
     for stream_id, packets in packet_streams.items():
-        output_streams.append({
-            "description": description,
-            "prompt": prompt,
-            "tags": tags,
-            "stream_id": {
-                "src_ip": stream_id[0],
-                "dst_ip": stream_id[1],
-                "src_port": stream_id[2],
-                "dst_port": stream_id[3],
-                "protocol": stream_id[4],
-            },
-            "packets": packets
-        })
+        # input minimum packet stream length here
+        if len(packets) >= 10:
+            output_streams.append({
+                "description": description,
+                "prompt": prompt,
+                "tags": tags,
+                "stream_id": {
+                    "src_ip": stream_id[0],
+                    "dst_ip": stream_id[1],
+                    "src_port": stream_id[2],
+                    "dst_port": stream_id[3],
+                    "protocol": stream_id[4],
+                },
+                "packets": packets
+            })
 
     if os.path.exists(output_json):
         with open(output_json, 'r') as json_file:
@@ -106,6 +116,7 @@ if __name__ == "__main__":
             json.dump([], json_file)
 
     # List of PCAP files to process
+    # TODO: implement use of 'description' and 'tags' fields in model
     pcap_files = [
         {"path": os.path.join(data_dir, "maccdc2012_00001.pcap"), "description": "Example 2", "tags": "Normal,DNS"},
         {"path": os.path.join(data_dir, "maccdc2012_00000.pcap"), "description": "Example 1", "tags": "Normal,DNS"},
