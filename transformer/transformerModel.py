@@ -265,6 +265,8 @@ class Transformer(nn.Module):
         device="cpu",
         max_length=100,
     ):
+        
+        self.embed_size = embed_size
 
         super(Transformer, self).__init__()
 
