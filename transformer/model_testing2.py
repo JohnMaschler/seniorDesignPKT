@@ -415,7 +415,7 @@ model = Transformer(
 ).to(device)
 
 
-criterion = nn.CrossEntropyLoss(ignore_index=trg_pad_idx)
+criterion = nn.NLLLoss(ignore_index=trg_pad_idx)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 num_epochs = 2
@@ -437,7 +437,9 @@ for epoch in range(num_epochs):
         output = output.reshape(-1, output.shape[2])
         trg_expected = trg_expected.reshape(-1)
 
-        loss = criterion(output, trg_expected)
+        log_probs = torch.log_softmax(output, dim=1)
+        loss = criterion(log_probs, trg_expected)
+
 
         optimizer.zero_grad()
         loss.backward()

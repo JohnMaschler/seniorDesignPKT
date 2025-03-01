@@ -77,9 +77,7 @@ def train_transformer(
 ):
     # TODO: change the loss function -- custom loss function!!!
     # TODO: remove the timestamp from packet header!
-    criterion = nn.CrossEntropyLoss(
-        ignore_index=packet_tokenizer.token2id[PAD], label_smoothing=0.1
-    )
+    criterion = nn.NLLLoss(ignore_index=packet_tokenizer.token2id[PAD])
     
     # optimizer = optim.Adam(model.parameters(), lr=lr)
     # eventually we should implement this because it was in the paper
@@ -113,8 +111,9 @@ def train_transformer(
 
             output = model(src, trg_input)
             output = output.view(-1, output.shape[2])
+            log_probs = torch.log_softmax(output, dim=1)
+            loss = criterion(log_probs, trg_expected)
 
-            loss = criterion(output, trg_expected)
 
             optimizer.zero_grad()
             loss.backward()
